@@ -1,0 +1,74 @@
+{% extends "layout.html" %}
+
+{% block title %}Admin Dashboard - University Administrator Directory{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Admin Dashboard</h2>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">Upload Administrator Data</h3>
+    </div>
+    <div class="card-content">
+        <p>Upload an Excel file (.xlsx or .xls) containing administrator information.</p>
+        <p><strong>Required columns:</strong> name, email, department, position</p>
+        <p><strong>Optional columns:</strong> officeAddress</p>
+        
+        <div class="mb-4"></div>
+        
+        <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="file-upload" class="file-label">Choose Excel File</label>
+                <input type="file" id="file-upload" name="file" accept=".xlsx,.xls" required>
+                <div id="file-name-preview" style="display: none; margin-top: 0.5rem;"></div>
+            </div>
+            
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">Upload</button>
+            </div>
+        </form>
+        
+        <div class="mb-4"></div>
+        
+        <p><small>Note: Uploading a new file will replace all existing administrator data.</small></p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">Current Administrators</h3>
+    </div>
+    <div class="card-content">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Position</th>
+                        <th>Department</th>
+                        <th>Email</th>
+                        <th>Office Address</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if administrators %}
+                        {% for admin in administrators %}
+                            <tr>
+                                <td>{{ admin.name }}</td>
+                                <td>{{ admin.position }}</td>
+                                <td>{{ admin.department }}</td>
+                                <td>{{ admin.email }}</td>
+                                <td>{{ admin.officeAddress if admin.officeAddress else '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="5" class="text-center">No administrators found. Upload an Excel file to add administrators.</td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
