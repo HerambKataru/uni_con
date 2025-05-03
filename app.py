@@ -1,0 +1,261 @@
+import os
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import pandas as pd
+import json
+import uuid
+
+# Configure application
+app = Flask(__name__, static_folder='static', template_folder='templates')
+app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')
+
+# Template context processor to add variables to all templates
+@app.context_processor
+def inject_now():
+    return {'now': datetime.now()}
+
+# Administrator database (in-memory for offline capability)
+administrators = []
+
+# Admin credentials (for simplicity, this would be in a database in production)
+ADMIN_USERNAME = 'admin'
+ADMIN_PASSWORD = generate_password_hash('admin123')
+
+# File paths
+UPLOAD_FOLDER = 'static/uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
+
+# Helper function to check allowed file extensions
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Routes
+@app.route('/')
+def index():
+    """Render the homepage with directory"""
+    return render_template('index.html', administrators=administrators)
+
+@app.route('/directory')
+def directory():
+    """Render the directory page"""
+    return render_template('directory.html', administrators=administrators)
+
+@app.route('/api/administrators')
+def get_administrators():
+    """API endpoint to get all administrators"""
+    return jsonify(administrators)
+
+@app.route('/api/administrators/search')
+def search_administrators():
+    """API endpoint to search administrators"""
+    query = request.args.get('query', '').lower()
+    department = request.args.get('department', '')
+    position = request.args.get('position', '')
+    
+    results = administrators
+    
+    if query:
+        results = [admin for admin in results if 
+                  query in admin['name'].lower() or 
+                  query in admin['email'].lower() or 
+                  (admin.get('officeAddress') and query in admin['officeAddress'].lower())]
+    
+    if department:
+        results = [admin for admin in results if admin['department'] == department]
+    
+    if position:
+        results = [admin for admin in results if admin['position'] == position]
+    
+    return jsonify(results)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Admin login page"""
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD, password):
+            session['logged_in'] = True
+            flash('Login successful', 'success')
+            return redirect(url_for('admin'))
+        else:
+            flash('Invalid username or password', 'danger')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    """Logout route"""
+    session.pop('logged_in', None)
+    flash('You have been logged out', 'info')
+    return redirect(url_for('index'))
+
+@app.route('/admin')
+def admin():
+    """Admin dashboard page - requires login"""
+    if not session.get('logged_in'):
+        flash('Please login to access this page', 'warning')
+        return redirect(url_for('login'))
+    
+    return render_template('admin.html', administrators=administrators)
+
+@app.route('/admin/upload', methods=['POST'])
+def upload_file():
+    """Upload Excel file with administrator data"""
+    if not session.get('logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    print("Upload request received")
+    
+    if 'file' not in request.files:
+        flash('No file part', 'danger')
+        return redirect(url_for('admin'))
+    
+    file = request.files['file']
+    print(f"Received file: {file.filename}")
+    
+    if file.filename == '':
+        flash('No selected file', 'danger')
+        return redirect(url_for('admin'))
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        # Ensure upload directory exists
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            os.makedirs(app.config['UPLOAD_FOLDER'])
+            
+        file.save(filepath)
+        print(f"File saved to: {filepath}")
+        
+        # Process Excel file
+        try:
+            print("Reading Excel file...")
+            df = pd.read_excel(filepath)
+            print(f"Excel columns: {df.columns.tolist()}")
+            
+            # Validate required columns
+            required_excel_columns = ['Designation', 'Name', 'Email-ID']
+            missing_columns = [col for col in required_excel_columns if col not in df.columns]
+            
+            if missing_columns:
+                print(f"Missing columns: {missing_columns}")
+                flash(f'Missing required columns: {", ".join(missing_columns)}', 'danger')
+                return redirect(url_for('admin'))
+            
+            # Process and add administrators
+            new_admins = []
+            print(f"Processing {len(df)} rows from Excel")
+            
+            for idx, row in df.iterrows():
+                # Skip empty rows or rows with no name
+                if pd.isna(row['Name']):
+                    continue
+                    
+                name = row['Name'] if not pd.isna(row['Name']) else ''
+                email = row['Email-ID'] if not pd.isna(row['Email-ID']) else ''
+                position = row['Designation'] if not pd.isna(row['Designation']) else ''
+                office_address = row['Office Address'] if 'Office Address' in row and not pd.isna(row['Office Address']) else ''
+                
+                if name:
+                    admin = {
+                        'id': str(uuid.uuid4()),
+                        'name': name,
+                        'email': email,
+                        'position': position,
+                        'officeAddress': office_address,
+                        'createdAt': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    new_admins.append(admin)
+            
+            print(f"Processed {len(new_admins)} valid administrator records")
+            
+            # Replace existing administrators with new ones
+            global administrators
+            administrators = new_admins
+            
+            # Save data to file
+            try:
+                save_data()
+                print("Saved data to file successfully")
+            except Exception as save_error:
+                print(f"Error saving data: {str(save_error)}")
+            
+            flash(f'Successfully uploaded {len(new_admins)} administrators', 'success')
+            
+        except Exception as e:
+            print(f"Error processing Excel file: {str(e)}")
+            flash(f'Error processing file: {str(e)}', 'danger')
+        
+        return redirect(url_for('admin'))
+    
+    print("Invalid file type")
+    flash('Invalid file type. Please upload Excel files only (.xlsx, .xls).', 'danger')
+    return redirect(url_for('admin'))
+
+@app.route('/admin/edit/<admin_id>', methods=['GET', 'POST'])
+def edit_administrator(admin_id):
+    """Edit an administrator"""
+    if not session.get('logged_in'):
+        flash('Please login to access this page', 'warning')
+        return redirect(url_for('login'))
+    
+    # Find the administrator by ID
+    admin = next((a for a in administrators if a.get('id') == admin_id), None)
+    
+    if not admin:
+        flash('Administrator not found', 'danger')
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        # Update administrator details
+        admin['name'] = request.form.get('name')
+        admin['email'] = request.form.get('email')
+        admin['position'] = request.form.get('position')
+        admin['department'] = request.form.get('department')
+        admin['officeAddress'] = request.form.get('officeAddress', '')
+        
+        # Save changes
+        save_data()
+        
+        flash('Administrator updated successfully', 'success')
+        return redirect(url_for('index'))
+    
+    return render_template('edit_administrator.html', admin=admin)
+
+# Save data to a JSON file to persist between runs
+def save_data():
+    with open('data/administrators.json', 'w') as f:
+        json.dump(administrators, f)
+
+# Load data from JSON file on startup
+def load_data():
+    global administrators
+    try:
+        if os.path.exists('data/administrators.json'):
+            with open('data/administrators.json', 'r') as f:
+                administrators = json.load(f)
+    except:
+        administrators = []
+
+# Create data directory if it doesn't exist
+if not os.path.exists('data'):
+    os.makedirs('data')
+
+# Load data at startup
+load_data()
+
+# Save data on exit
+import atexit
+atexit.register(save_data)
+
+# Main entry point
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=3000, debug=False)
